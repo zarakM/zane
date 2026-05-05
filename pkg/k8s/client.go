@@ -91,6 +91,75 @@ func NewClient(kubeconfigPath string) (*Client, error) {
 	return &Client{clientset: clientset, serverURL: config.Host}, nil
 }
 
+// NamespaceInventory is the cheap-to-fetch list of resources used by the `ask`
+// command's router. The router needs *names* to anchor a free-form question to
+// a concrete resource — but it does not need spec/status, so we deliberately
+// fetch only what's needed and format compactly to keep the routing prompt small.
+type NamespaceInventory struct {
+	Pods        []string
+	Deployments []string
+}
+
+// Format renders the inventory as a compact text block suitable for inclusion
+// in a routing prompt. Returns an empty-state hint if nothing is found, so the
+// router can degrade to a "generic" decision.
+func (inv NamespaceInventory) Format() string {
+	if len(inv.Pods) == 0 && len(inv.Deployments) == 0 {
+		return "(namespace appears empty — no pods or deployments found)"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Pods:\n")
+	if len(inv.Pods) == 0 {
+		sb.WriteString("  (none)\n")
+	} else {
+		for _, name := range inv.Pods {
+			sb.WriteString("  - ")
+			sb.WriteString(name)
+			sb.WriteString("\n")
+		}
+	}
+	sb.WriteString("Deployments:\n")
+	if len(inv.Deployments) == 0 {
+		sb.WriteString("  (none)\n")
+	} else {
+		for _, name := range inv.Deployments {
+			sb.WriteString("  - ")
+			sb.WriteString(name)
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
+}
+
+// GatherNamespaceInventory lists pod and deployment names in the namespace.
+// Only names — spec and status are not needed for routing and would balloon the
+// prompt. Errors from one list type don't fail the other (best-effort).
+func (c *Client) GatherNamespaceInventory(ctx context.Context, namespace string) (NamespaceInventory, error) {
+	inv := NamespaceInventory{}
+
+	pods, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, p := range pods.Items {
+			inv.Pods = append(inv.Pods, p.Name)
+		}
+	}
+
+	deps, derr := c.clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+	if derr == nil {
+		for _, d := range deps.Items {
+			inv.Deployments = append(inv.Deployments, d.Name)
+		}
+	}
+
+	// We tolerate one failure but surface a hard error if both list calls failed —
+	// the router has nothing to anchor against.
+	if err != nil && derr != nil {
+		return inv, fmt.Errorf("could not list resources in namespace %q: %w", namespace, err)
+	}
+	return inv, nil
+}
+
 // GetPodPhase fetches just the pod phase so the caller can decide which
 // diagnostic path to take before doing the heavier data collection.
 func (c *Client) GetPodPhase(ctx context.Context, namespace, podName string) (string, error) {

@@ -431,3 +431,236 @@ func buildRolloutPrompt(data *k8s.RolloutDiagnosticData) string {
 
 	return sb.String()
 }
+
+// ---------------------------------------------------------------------------
+// Co-Pilot path — router + free-form answer.
+// `Diagnose*` is for the rigid `diagnose`/`rollout` commands.
+// `Route` + `Answer*` is for the free-form `ask` command, where the user
+// types a natural-language question and we route to the matching strategy.
+// ---------------------------------------------------------------------------
+
+// RouteDecision is what Route returns — which strategy to use and the target
+// resource name. Kind is one of "pod", "deployment", "generic".
+type RouteDecision struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+// completeResponse mirrors the non-streaming Anthropic /v1/messages JSON body.
+// We only decode the fields we read; unknown fields are ignored.
+type completeResponse struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+	Error *struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// complete is the non-streaming companion to streamTo. It returns the full
+// assistant text. Used by Route() where we want a small JSON answer back rather
+// than a streamed multi-paragraph response.
+func (c *ClaudeClient) complete(ctx context.Context, reqBody claudeRequest) (string, error) {
+	reqBody.Stream = false
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to build request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, claudeAPIURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var parsed completeResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("could not decode response: %w", err)
+	}
+	if parsed.Error != nil {
+		return "", fmt.Errorf("Claude API error (%s): %s", parsed.Error.Type, parsed.Error.Message)
+	}
+
+	var sb strings.Builder
+	for _, block := range parsed.Content {
+		if block.Type == "text" {
+			sb.WriteString(block.Text)
+		}
+	}
+	return sb.String(), nil
+}
+
+// Route asks Claude to classify the user's free-form question against a small
+// inventory of pod and deployment names in the chosen namespace. Returns a
+// {Kind, Name} pair the caller dispatches on.
+//
+// The router is intentionally conservative: if it can't confidently identify a
+// specific resource it returns Kind="generic" so the caller can prompt the user
+// rather than guessing wrong.
+func (c *ClaudeClient) Route(ctx context.Context, question, namespace, inventory string) (RouteDecision, error) {
+	userPrompt := fmt.Sprintf(`Question: %s
+
+Namespace: %s
+
+Inventory:
+%s
+
+Return your decision as JSON.`, question, namespace, inventory)
+
+	raw, err := c.complete(ctx, claudeRequest{
+		Model:     claudeModel,
+		MaxTokens: 200,
+		System:    routerSystemPrompt(),
+		Messages:  []message{{Role: "user", Content: userPrompt}},
+	})
+	if err != nil {
+		return RouteDecision{}, err
+	}
+
+	// The model is asked to return JSON only, but it sometimes wraps in code fences.
+	// Be tolerant: find the first { and the last }.
+	first := strings.Index(raw, "{")
+	last := strings.LastIndex(raw, "}")
+	if first < 0 || last <= first {
+		return RouteDecision{}, fmt.Errorf("router returned no JSON object: %q", raw)
+	}
+
+	var d RouteDecision
+	if err := json.Unmarshal([]byte(raw[first:last+1]), &d); err != nil {
+		return RouteDecision{}, fmt.Errorf("could not parse router decision: %w (raw=%q)", err, raw)
+	}
+	return d, nil
+}
+
+// routerSystemPrompt instructs Claude to map a free-form question to one of the
+// supported strategies. The valid Kinds match the gather strategies the binary
+// has today; "generic" is the fallback for questions that don't name a specific
+// resource (e.g. "what's healthy in this namespace?").
+func routerSystemPrompt() string {
+	return `You are a routing classifier inside a Kubernetes co-pilot CLI.
+
+Given the user's natural-language question, the namespace they are operating in, and an inventory of pod and deployment names in that namespace, decide which diagnostic strategy fits.
+
+Return ONLY a single JSON object with exactly two fields:
+  {"kind": "pod" | "deployment" | "generic", "name": "<resource name or empty string>"}
+
+Rules:
+- If the question mentions or strongly implies a specific pod from the inventory, return kind="pod" with that pod name.
+- If it mentions or strongly implies a specific deployment from the inventory (rollout, replicas, "deployment X is stuck"), return kind="deployment" with that deployment name.
+- If the question references a name that resembles a pod (often deployment-name plus a hash suffix like "-7d8f9c"), prefer kind="pod" and use the literal name from the inventory.
+- If the question is generic ("what's wrong in this namespace?", "are my workloads healthy?") or you cannot match a resource confidently, return kind="generic" with name="".
+- Do NOT invent resource names that are not in the inventory. If the user names a resource not in the inventory, still return it under kind="pod" or kind="deployment" using their spelling — the caller will surface a not-found error.
+
+Output JSON only. No prose, no code fences.`
+}
+
+// AnswerCrash streams a free-form answer using crash diagnostic data.
+// The Answer* family uses a conversational system prompt (not the rigid
+// 6-section schema used by Diagnose*).
+func (c *ClaudeClient) AnswerCrash(ctx context.Context, question string, data *k8s.DiagnosticData, out io.Writer) error {
+	return c.streamTo(ctx, claudeRequest{
+		Model:     claudeModel,
+		MaxTokens: 1024,
+		Stream:    true,
+		System:    answerSystemPrompt(),
+		Messages:  []message{{Role: "user", Content: buildAnswerCrashPrompt(question, data)}},
+	}, out)
+}
+
+// AnswerPending streams a free-form answer using pending-pod diagnostic data.
+func (c *ClaudeClient) AnswerPending(ctx context.Context, question string, data *k8s.PendingDiagnosticData, out io.Writer) error {
+	return c.streamTo(ctx, claudeRequest{
+		Model:     claudeModel,
+		MaxTokens: 1024,
+		Stream:    true,
+		System:    answerSystemPrompt(),
+		Messages:  []message{{Role: "user", Content: buildAnswerPendingPrompt(question, data)}},
+	}, out)
+}
+
+// AnswerRollout streams a free-form answer using rollout diagnostic data.
+func (c *ClaudeClient) AnswerRollout(ctx context.Context, question string, data *k8s.RolloutDiagnosticData, out io.Writer) error {
+	return c.streamTo(ctx, claudeRequest{
+		Model:     claudeModel,
+		MaxTokens: 1024,
+		Stream:    true,
+		System:    answerSystemPrompt(),
+		Messages:  []message{{Role: "user", Content: buildAnswerRolloutPrompt(question, data)}},
+	}, out)
+}
+
+// answerSystemPrompt is shared by all Answer* methods. Unlike the Diagnose*
+// prompts, it does not enforce a fixed 6-section schema — the question shape
+// determines the answer shape. It does enforce evidence-citation discipline
+// (no hand-waving) and a "Next Step" suffix when the question implies action.
+func answerSystemPrompt() string {
+	return `You are the user's Kubernetes operations co-pilot — concise, opinionated, evidence-driven.
+
+You will be given a user question and structured cluster data relevant to that question. Answer the question directly using only that data.
+
+Format rules:
+- Lead with a one-sentence direct answer.
+- Then 2–3 short bullet points of evidence drawn from the supplied data — quote exact values where possible (probe path, image tag, replica counts, exit code, event reason).
+- If the question implies action (something is broken or needs fixing), end with a "Next step:" line containing exactly one concrete kubectl command or YAML change.
+- If the data is insufficient to answer confidently, say so in one sentence and name the single piece of additional data that would resolve it.
+
+Tone:
+- Plain English. No hedging language ("it could be many things"). Pick the most likely explanation and commit.
+- Do not echo the user's question text back verbatim. Refer to resources by their kind ("this pod", "the deployment") rather than re-typing names the user used.
+- No preamble, no closing pleasantries. First sentence is the answer.`
+}
+
+// buildAnswerCrashPrompt prepends the user's question to the same diagnostic
+// payload used by buildPrompt — the gathered data is the same; only the system
+// prompt and the leading "Question:" line differ.
+func buildAnswerCrashPrompt(question string, data *k8s.DiagnosticData) string {
+	var sb strings.Builder
+	sb.WriteString("Question: ")
+	sb.WriteString(question)
+	sb.WriteString("\n\n")
+	sb.WriteString("---\n\n")
+	sb.WriteString(buildPrompt(data))
+	return sb.String()
+}
+
+// buildAnswerPendingPrompt is the pending-pod equivalent of buildAnswerCrashPrompt.
+func buildAnswerPendingPrompt(question string, data *k8s.PendingDiagnosticData) string {
+	var sb strings.Builder
+	sb.WriteString("Question: ")
+	sb.WriteString(question)
+	sb.WriteString("\n\n")
+	sb.WriteString("---\n\n")
+	sb.WriteString(buildPendingPrompt(data))
+	return sb.String()
+}
+
+// buildAnswerRolloutPrompt is the rollout equivalent of buildAnswerCrashPrompt.
+func buildAnswerRolloutPrompt(question string, data *k8s.RolloutDiagnosticData) string {
+	var sb strings.Builder
+	sb.WriteString("Question: ")
+	sb.WriteString(question)
+	sb.WriteString("\n\n")
+	sb.WriteString("---\n\n")
+	sb.WriteString(buildRolloutPrompt(data))
+	return sb.String()
+}

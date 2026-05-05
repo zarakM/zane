@@ -13,16 +13,17 @@ import (
 // rootCmd is the base command. Running `kubectl-ai` alone prints help.
 var rootCmd = &cobra.Command{
 	Use:   "kubectl-ai",
-	Short: "AI-powered Kubernetes diagnostics",
-	Long: `kubectl-ai is an AI-native SRE that diagnoses Kubernetes issues in real time.
+	Short: "AI Kubernetes Operations Co-Pilot",
+	Long: `kubectl-ai is your AI Kubernetes operations co-pilot.
 
-It collects pod logs, events, and cluster state, then uses an LLM to
-explain what's wrong and what to do about it — in plain English.
+Ask a free-form question or run a focused diagnostic. The CLI collects pod
+logs, events, deployment status, and cluster state, then uses an LLM to
+answer in plain English.
 
 Examples:
-  kubectl ai diagnose my-pod
-  kubectl ai diagnose my-pod -n production
-  kubectl ai diagnose my-pod -n production --lines 100`,
+  kubectl-ai ask "why is checkout-api failing?" -n production
+  kubectl-ai diagnose my-pod -n production
+  kubectl-ai rollout my-deployment -n production`,
 }
 
 // Execute is called by main.go. It runs the CLI and handles any top-level error.

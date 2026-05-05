@@ -154,34 +154,35 @@ func LogRolloutIncident(data *k8s.RolloutDiagnosticData, diagnosis, serverURL st
 	}, url, key)
 }
 
-// postIncident is the shared fire-and-forget HTTP POST.
-// context.Background so cancellation of the CLI context doesn't abort the in-flight POST.
+// postIncident is the shared HTTP POST. Synchronous with a short timeout so the
+// row actually flushes before the CLI exits — a previous goroutine-based version
+// raced with process exit and lost most rows. All errors are swallowed so the user
+// flow is never disrupted; worst case the CLI blocks for `timeout` and moves on.
 func postIncident(log IncidentLog, url, key string) {
-	go func(url, key string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	const timeout = 3 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-		body, err := json.Marshal(log)
-		if err != nil {
-			return
-		}
+	body, err := json.Marshal(log)
+	if err != nil {
+		return
+	}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			url+"/rest/v1/incidents", bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("apikey", key)
-		req.Header.Set("Authorization", "Bearer "+key)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Prefer", "return=minimal") // don't return the inserted row
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		url+"/rest/v1/incidents", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("apikey", key)
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Prefer", "return=minimal") // don't return the inserted row
 
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return
-		}
-		resp.Body.Close()
-	}(url, key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
 }
 
 // AnonymizeCluster hashes the cluster API server URL.
