@@ -1,15 +1,18 @@
 # kubectl-ai — AI Kubernetes Co-Pilot
 
-> AI-native SRE that diagnoses Kubernetes failures in plain English
+> Ask your cluster anything. Routes to the right diagnostic, answers in plain English.
 
 ## What it does
 
-One command — `diagnose` — works on any broken pod. It detects the failure type automatically:
+Three entry points share the same gather + Claude pipeline:
 
-- **Crashing pod** (CrashLoopBackOff, OOMKilled) — correlates logs, events, and resource limits
-- **Pending pod** — correlates node capacity, taints, quotas, and PVC binding status
-- Streams the diagnosis token-by-token as it arrives
-- Returns structured output: root cause, confidence, evidence, exact fix command
+- **`ask "<question>"`** — free-form natural-language entry point. Routes the question to the right strategy (pod / deployment) automatically and answers conversationally with cited evidence.
+- **`diagnose <pod>`** — focused diagnostic for a broken pod. Detects the failure type automatically:
+  - **Crashing pod** (CrashLoopBackOff, OOMKilled) — correlates logs, events, and resource limits
+  - **Pending pod** — correlates node capacity, taints, quotas, and PVC binding status
+- **`rollout <deployment>`** — focused diagnostic for a stuck Deployment rollout. Picks the worst replica, gathers its logs, and reports.
+
+All three stream the answer token-by-token. The focused commands return a structured diagnosis (root cause, confidence, evidence, next command, exact fix); `ask` returns a direct answer with cited evidence and an optional next step.
 
 ## Requirements
 
@@ -43,14 +46,21 @@ GOOS=linux GOARCH=amd64 go build -o kubectl-ai-linux .
 ```bash
 export ANTHROPIC_API_KEY=your-key
 
-# Works on any broken pod — auto-detects crash vs pending
+# Free-form: ask anything, the router picks the right strategy
+kubectl-ai ask "why is checkout-api failing?" -n production
+kubectl-ai ask "is my web deployment healthy?"
+
+# Focused: works on any broken pod — auto-detects crash vs pending
 kubectl-ai diagnose <pod-name> -n <namespace>
 
+# Focused: stuck Deployment rollouts
+kubectl-ai rollout <deployment-name> -n <namespace>
+
 # Use a specific kubeconfig
-kubectl-ai --kubeconfig ./my-kubeconfig diagnose <pod-name> -n <namespace>
+kubectl-ai --kubeconfig ./my-kubeconfig ask "what's wrong here?" -n production
 
 # Disable telemetry for a single run
-kubectl-ai diagnose <pod-name> --no-telemetry
+kubectl-ai ask "..." --no-telemetry
 ```
 
 ## Telemetry
