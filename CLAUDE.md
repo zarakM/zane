@@ -67,19 +67,20 @@ zanecli (single binary, no subcommands)
   ├── pkg/ai      — REUSED in part: streamTo, complete, ClaudeClient
   ├── pkg/telemetry — REUSED; new incident_types added in Phase 4
   ├── pkg/config  — NEW (Phase 2): wizard + persisted config
-  ├── pkg/safety  — NEW (Phase 4): four-guard auto-exec check
+  ├── pkg/safety  — NEW (Phase 4): three-guard auto-exec check + session opt-in
   └── pkg/history — NEW (Phase 5): JSONL session log + resume
 ```
 
-### Auto-exec safety (four guards — Phase 4)
+### Auto-exec safety (three guards + session opt-in — Phase 4)
 
-A whitelisted write reaches auto-exec only if all four pass:
+Auto-exec is **off by default**. The user explicitly opts in via the wizard, the `--auto` / `--no-auto` CLI flags, or the `/auto` `/no-auto` REPL slash commands. Once opted in, a whitelisted write reaches auto-exec only if all three guards pass:
 1. **Whitelist match** — tool is `restart_deployment` or `delete_pod`.
 2. **State precondition** — target is already in failing state (verified via `pkg/k8s` re-fetch immediately before execution).
-3. **Production-pattern guard** — namespace does not match the user's configured prod regex (default `(?i)^(prod|production|live)`).
-4. **Per-session quota** — max 3 auto-execs per chat session.
+3. **Per-session quota** — max 3 auto-execs per chat session.
 
-Failure of any guard falls back to confirmation prompt.
+The earlier production-namespace regex was dropped: namespace-name heuristics are leaky in both directions (`prod-shadow` false-positives, `live-eu-1` false-negatives), and putting the trust decision in the user's hands via the explicit opt-in is clearer than asking the agent to guess from names.
+
+Failure of the opt-in or any guard falls back to confirmation prompt.
 
 ## Telemetry data model (Supabase `incidents` table)
 

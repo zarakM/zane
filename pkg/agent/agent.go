@@ -5,9 +5,10 @@ package agent
 // assistant's final text to the user.
 //
 // Phase 4: write tools are now in the registry, but the agent consults
-// pkg/safety.Guard before invoking any of them. The four-guard check
-// classifies each write as AutoExec / Confirm / Refuse; Confirm prompts
-// the user via the Confirmer interface.
+// pkg/safety.Guard before invoking any of them. The three-guard check
+// (gated by the session-level auto-exec opt-in) classifies each write as
+// AutoExec / Confirm / Refuse; Confirm prompts the user via the Confirmer
+// interface.
 
 import (
 	"context"
@@ -178,8 +179,7 @@ func (s *Session) dispatchTool(ctx context.Context, tu ai.ContentBlock, out io.W
 	// Write tools: consult the safety guard.
 	decision := s.guard.Evaluate(ctx, s.client, tu.Name, tu.Input, s.autoExecCount)
 	humanAction := humanReadableAction(tu.Name, tu.Input)
-	ns, _, _ := extractNamespaceAndTarget(tu.Name, tu.Input)
-	inProd := s.guard.MatchesProduction(ns)
+	autoExecEnabled := s.cfg.AutoExec
 	preconditionMet := decision.Decision == safety.AutoExec
 
 	switch decision.Decision {
@@ -187,30 +187,30 @@ func (s *Session) dispatchTool(ctx context.Context, tu ai.ContentBlock, out io.W
 		fmt.Fprintf(out, "%s[%s (auto-execute) — %s]%s\n", ui.Yellow, tu.Name, decision.Reason, ui.Reset)
 		s.autoExecCount++
 		result, runErr := s.registry.Run(ctx, tu.Name, tu.Input)
-		s.logWrite(tu.Name, "auto_exec", inProd, preconditionMet, false, result)
+		s.logWrite(tu.Name, "auto_exec", autoExecEnabled, preconditionMet, false, result)
 		return toolResult(tu.ID, result, runErr)
 
 	case safety.Confirm:
 		if s.confirmer == nil {
 			msg := fmt.Sprintf("refused: confirmation required (%s) but no confirmer is wired", decision.Reason)
-			s.logWrite(tu.Name, "refused_write", inProd, preconditionMet, false, msg)
+			s.logWrite(tu.Name, "refused_write", autoExecEnabled, preconditionMet, false, msg)
 			return toolResultErr(tu.ID, msg)
 		}
 		fmt.Fprintf(out, "%s[%s — %s]%s\n", ui.Yellow, tu.Name, decision.Reason, ui.Reset)
 		prompt := fmt.Sprintf("%sWant me to %s? [y/N]%s ", ui.Bold, humanAction, ui.Reset)
 		if !s.confirmer.AskYesNo(prompt) {
 			result := "user declined"
-			s.logWrite(tu.Name, "refused_write", inProd, preconditionMet, false, result)
+			s.logWrite(tu.Name, "refused_write", autoExecEnabled, preconditionMet, false, result)
 			return toolResultErr(tu.ID, result)
 		}
 		fmt.Fprintf(out, "%s[%s (confirmed)...]%s\n", ui.Green, tu.Name, ui.Reset)
 		result, runErr := s.registry.Run(ctx, tu.Name, tu.Input)
-		s.logWrite(tu.Name, "confirmed_write", inProd, preconditionMet, true, result)
+		s.logWrite(tu.Name, "confirmed_write", autoExecEnabled, preconditionMet, true, result)
 		return toolResult(tu.ID, result, runErr)
 
 	case safety.Refuse:
 		msg := fmt.Sprintf("refused: %s", decision.Reason)
-		s.logWrite(tu.Name, "refused_write", inProd, preconditionMet, false, msg)
+		s.logWrite(tu.Name, "refused_write", autoExecEnabled, preconditionMet, false, msg)
 		return toolResultErr(tu.ID, msg)
 	}
 
@@ -219,40 +219,17 @@ func (s *Session) dispatchTool(ctx context.Context, tu ai.ContentBlock, out io.W
 
 // logWrite fires a sanitized telemetry row for a write attempt. Skips
 // silently when the user disabled telemetry in config.
-func (s *Session) logWrite(action, incidentType string, inProd, preconditionMet, userConfirmed bool, result string) {
+func (s *Session) logWrite(action, incidentType string, autoExecEnabled, preconditionMet, userConfirmed bool, result string) {
 	if !s.cfg.TelemetryEnabled {
 		return
 	}
 	telemetry.LogWriteAction(action, incidentType, telemetry.WriteSignals{
 		Action:            action,
-		InProductionNS:    inProd,
+		AutoExecEnabled:   autoExecEnabled,
 		PreconditionMet:   preconditionMet,
 		UserConfirmed:     userConfirmed,
 		AutoExecQuotaUsed: s.autoExecCount,
 	}, result, s.client.ServerURL())
-}
-
-// extractNamespaceAndTarget mirrors safety.extractNamespaceAndTarget but
-// is replicated here (small) to avoid exporting a private helper. Used to
-// surface the namespace string into telemetry as a boolean (in_production_ns).
-func extractNamespaceAndTarget(toolName string, input json.RawMessage) (namespace, target string, err error) {
-	var m map[string]any
-	if len(input) > 0 {
-		_ = json.Unmarshal(input, &m)
-	}
-	ns, _ := m["namespace"].(string)
-	if ns == "" {
-		ns = "default"
-	}
-	switch toolName {
-	case "delete_pod":
-		t, _ := m["pod"].(string)
-		return ns, t, nil
-	case "restart_deployment":
-		t, _ := m["deployment"].(string)
-		return ns, t, nil
-	}
-	return ns, "", nil
 }
 
 // humanReadableAction phrases a write tool call for the confirmation prompt.
@@ -327,7 +304,7 @@ Operating rules:
 - Privacy: do not echo the user's exact wording for resource names. Refer to resources by their kind ("this pod", "the deployment") in summaries; identifiers may appear naturally inside quoted evidence.
 
 Write tools:
-- restart_deployment and delete_pod can be auto-executed when the cluster passes a four-guard safety check (whitelist, production-pattern, state precondition, per-session quota). The check happens automatically — you do not need to verify it.
+- restart_deployment and delete_pod can be auto-executed when the user has enabled auto-exec for this session AND a three-guard safety check passes (whitelist, state precondition, per-session quota). The check happens automatically — you do not need to verify it. When auto-exec is off, every write falls through to a y/N confirmation prompt.
 - Other writes (scale_deployment, apply_yaml, patch_resource — none registered yet) always prompt the user.
 - Before invoking any write, briefly explain what you plan to do and why. The user sees a [tool_name] line when it runs and can ⌃C if they didn't want it.
 

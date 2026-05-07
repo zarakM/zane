@@ -1,16 +1,19 @@
 package safety
 
-// Four-guard safety check for write actions. The agent calls Evaluate
-// before executing any write tool; the result decides whether to auto-exec,
-// prompt the user for confirmation, or refuse outright.
+// Three-guard safety check for write actions, gated by a session-level
+// opt-in. The agent calls Evaluate before executing any write tool; the
+// result decides whether to auto-exec, prompt the user for confirmation,
+// or refuse outright.
 //
-// Guards (all four must pass for AutoExec):
+// Session opt-in: cfg.AutoExec must be true. Set via wizard, --auto/--no-auto
+// flags, or /auto and /no-auto REPL slash commands. Default off.
+//
+// Guards (all three must pass for AutoExec, after the opt-in):
 //   1. Whitelist match — tool is on the auto-exec list.
-//   2. Production pattern — namespace must NOT match the user's prod regex.
-//   3. State precondition — target must be in a failing/recoverable state
+//   2. State precondition — target must be in a failing/recoverable state
 //      (e.g. CrashLoopBackOff for delete_pod). Re-fetched at decision time
 //      so a stale agent observation can't trigger an exec.
-//   4. Per-session quota — at most maxAutoExecsPerSession auto-execs.
+//   3. Per-session quota — at most maxAutoExecsPerSession auto-execs.
 
 import (
 	"context"
@@ -86,6 +89,13 @@ func (g *Guard) Evaluate(ctx context.Context, client *k8s.Client, toolName strin
 		return Result{Decision: AutoExec, Reason: "read-only tool"}
 	}
 
+	// Session opt-in — fail closed when the user hasn't enabled auto-exec
+	// for this session. This replaces the old production-namespace regex:
+	// the user, not a heuristic, declares the trust level.
+	if !g.cfg.AutoExec {
+		return Result{Decision: Confirm, Reason: "auto-exec disabled for this session"}
+	}
+
 	// Guard 1 — whitelist
 	if !isWhitelistedAutoExec(toolName) {
 		return Result{Decision: Confirm, Reason: "tool requires confirmation by policy"}
@@ -97,29 +107,17 @@ func (g *Guard) Evaluate(ctx context.Context, client *k8s.Client, toolName strin
 		return Result{Decision: Refuse, Reason: fmt.Sprintf("could not parse input: %v", err)}
 	}
 
-	// Guard 2 — production pattern
-	if g.cfg.MatchesProduction(ns) {
-		return Result{Decision: Confirm, Reason: fmt.Sprintf("namespace %q matches production pattern", ns)}
-	}
-
-	// Guard 3 — state precondition (re-fetched live)
+	// Guard 2 — state precondition (re-fetched live)
 	if err := checkStatePrecondition(ctx, client, toolName, ns, target); err != nil {
 		return Result{Decision: Confirm, Reason: fmt.Sprintf("state precondition not met: %v", err)}
 	}
 
-	// Guard 4 — per-session quota
+	// Guard 3 — per-session quota
 	if autoExecCount >= MaxAutoExecsPerSession {
 		return Result{Decision: Confirm, Reason: "session auto-exec quota exhausted"}
 	}
 
 	return Result{Decision: AutoExec, Reason: "all guards passed"}
-}
-
-// MatchesProduction is a passthrough exposed for telemetry: callers want to
-// log whether a write touched a prod-pattern namespace (boolean only — no
-// names persisted).
-func (g *Guard) MatchesProduction(namespace string) bool {
-	return g.cfg.MatchesProduction(namespace)
 }
 
 // extractNamespaceAndTarget pulls the namespace + relevant target name from

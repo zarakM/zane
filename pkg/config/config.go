@@ -11,23 +11,22 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
 // Config is everything zanecli persists between launches.
 // File mode is 0600 — it contains an API key.
 type Config struct {
-	AnthropicAPIKey   string `json:"anthropic_api_key"`
-	KubeconfigPath    string `json:"kubeconfig_path"`
-	TelemetryEnabled  bool   `json:"telemetry_enabled"`
-	HistoryEnabled    bool   `json:"history_enabled"`
-	ProductionPattern string `json:"production_pattern"` // regex; checked before any auto-exec write
+	AnthropicAPIKey  string `json:"anthropic_api_key"`
+	KubeconfigPath   string `json:"kubeconfig_path"`
+	TelemetryEnabled bool   `json:"telemetry_enabled"`
+	HistoryEnabled   bool   `json:"history_enabled"`
+	// AutoExec opts the session into auto-executing whitelisted writes
+	// (delete_pod, restart_deployment) when the safety guard's other
+	// preconditions pass. Default: false. Override per-invocation with
+	// --auto / --no-auto, or mid-session with /auto and /no-auto.
+	AutoExec bool `json:"auto_exec"`
 }
-
-// DefaultProductionPattern matches anything starting with prod / production / live
-// (case-insensitive). Auto-exec writes refuse to run in matching namespaces.
-const DefaultProductionPattern = `(?i)^(prod|production|live)`
 
 // Paths returns the config directory and file path. Created on first save.
 func Paths() (dir, file string, err error) {
@@ -62,10 +61,6 @@ func Load() (*Config, bool, error) {
 	}
 
 	cfg.applyEnvOverrides()
-
-	if _, err := regexp.Compile(cfg.ProductionPattern); err != nil {
-		return nil, true, fmt.Errorf("invalid production_pattern %q: %w", cfg.ProductionPattern, err)
-	}
 	return &cfg, true, nil
 }
 
@@ -115,9 +110,7 @@ func RunWizard(in io.Reader, out io.Writer) (*Config, error) {
 	fmt.Fprintln(out, "First-run setup. We need a few details — written to ~/.zanecli/config.json.")
 	fmt.Fprintln(out)
 
-	cfg := &Config{
-		ProductionPattern: DefaultProductionPattern,
-	}
+	cfg := &Config{}
 
 	// Anthropic API key — accept env-var fallback if set.
 	if env := os.Getenv("ANTHROPIC_API_KEY"); env != "" {
@@ -166,15 +159,11 @@ func RunWizard(in io.Reader, out io.Writer) (*Config, error) {
 	fmt.Fprint(out, "Persist conversation history locally? It includes resource names from your cluster, never uploaded. [y/N]: ")
 	cfg.HistoryEnabled = asksYes(read())
 
-	// Production pattern — keep the default; offer override.
-	fmt.Fprintf(out, "Production-namespace regex (auto-exec writes refuse here) [default: %s]: ", DefaultProductionPattern)
-	if v := read(); v != "" {
-		if _, err := regexp.Compile(v); err != nil {
-			fmt.Fprintf(out, "  invalid regex (%v); keeping default.\n", err)
-		} else {
-			cfg.ProductionPattern = v
-		}
-	}
+	// Auto-exec opt-in — default OFF. The user explicitly declares trust
+	// for whitelisted writes (delete_pod, restart_deployment); per-session
+	// overrides come from --auto / --no-auto flags or /auto / /no-auto.
+	fmt.Fprint(out, "Auto-fix crashlooping pods and stuck rollouts without prompting? You can override per-session with --auto / --no-auto. [y/N]: ")
+	cfg.AutoExec = asksYes(read())
 
 	if err := cfg.Save(); err != nil {
 		return nil, err
@@ -196,21 +185,6 @@ func LoadOrWizard(in io.Reader, out io.Writer) (*Config, error) {
 		return cfg, nil
 	}
 	return RunWizard(in, out)
-}
-
-// MatchesProduction reports whether the namespace looks like a production env.
-// Used by Phase 4's auto-exec safety guard.
-func (c *Config) MatchesProduction(namespace string) bool {
-	if c.ProductionPattern == "" {
-		return false
-	}
-	re, err := regexp.Compile(c.ProductionPattern)
-	if err != nil {
-		// Fail closed: invalid regex treats every namespace as production.
-		// This is intentional — better safe than auto-exec'ing unexpectedly.
-		return true
-	}
-	return re.MatchString(namespace)
 }
 
 // --- helpers ---

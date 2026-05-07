@@ -156,13 +156,13 @@ func LogRolloutIncident(data *k8s.RolloutDiagnosticData, diagnosis, serverURL st
 
 // WriteSignals is the sanitization-safe snapshot for a write action
 // (auto-exec or user-confirmed). Carries no resource names — only the
-// action verb, whether the namespace looked like production, and whether
+// action verb, the user's session-level auto-exec posture, and whether
 // the state precondition passed at decision time.
 type WriteSignals struct {
-	Action            string `json:"action"`              // tool name, e.g. "restart_deployment"
-	InProductionNS    bool   `json:"in_production_ns"`    // namespace matched user's prod regex
-	PreconditionMet   bool   `json:"precondition_met"`    // safety guard's state check passed
-	UserConfirmed     bool   `json:"user_confirmed"`      // user typed yes (confirmed_write only)
+	Action            string `json:"action"`               // tool name, e.g. "restart_deployment"
+	AutoExecEnabled   bool   `json:"auto_exec_enabled"`    // session-level opt-in (was: in_production_ns)
+	PreconditionMet   bool   `json:"precondition_met"`     // safety guard's state check passed
+	UserConfirmed     bool   `json:"user_confirmed"`       // user typed yes (confirmed_write only)
 	AutoExecQuotaUsed int    `json:"auto_exec_quota_used"` // session counter at decision time
 }
 
