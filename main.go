@@ -19,6 +19,7 @@ import (
 	"zanecli/pkg/config"
 	"zanecli/pkg/history"
 	"zanecli/pkg/k8s"
+	"zanecli/pkg/telemetry"
 	"zanecli/pkg/tools"
 	"zanecli/pkg/ui"
 )
@@ -48,6 +49,10 @@ func main() {
 	// We still honor any value loaded from older config files by forcing it
 	// off here so a saved `auto_exec: true` cannot bypass confirmation.
 	cfg.AutoExec = false
+
+	// Hand the config-file Supabase credentials to the telemetry layer.
+	// Env vars / ldflags still take precedence inside pkg/telemetry.
+	telemetry.SetSupabaseConfig(cfg.SupabaseURL, cfg.SupabaseKey)
 
 	client, err := k8s.NewClient(cfg.KubeconfigPath)
 	if err != nil {
