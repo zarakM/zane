@@ -11,13 +11,21 @@ All six original implementation phases (rename, wizard, agent loop, write action
 ## Build, run, check
 
 ```bash
-go build -o zanecli .        # build
-./zanecli                    # run (first launch triggers the config wizard)
-go vet ./...                 # vet (no Makefile, no golangci config, no test suite exist)
-go mod tidy                  # after touching imports
+go build -o zanecli .              # build
+./zanecli                          # run (first launch triggers the config wizard)
+go vet ./...                       # vet
+go test ./... -race -count=1       # unit tests (full suite ~3s)
+go mod tidy                        # after touching imports
 ```
 
-There are **no `*_test.go` files** and no lint/CI config in the repo — `go build` + `go vet` is the full local check. `testdata/` holds manual smoke targets (`crashloop-pod.yaml`, `stuck-rollout.yaml`) you apply to a real cluster and then drive the agent against; they are not automated tests.
+Tests live in `*_test.go` next to the source they cover (`pkg/safety/guards_test.go`, `pkg/k8s/generic_test.go`, `pkg/telemetry/sanitize_test.go`, `pkg/telemetry/logger_test.go`, `pkg/tools/tools_test.go`, `pkg/ai/claude_test.go`, `pkg/history/history_test.go`, `pkg/config/config_test.go`, `pkg/agent/agent_test.go`). Two pieces of test-only infrastructure are worth knowing about before extending them:
+
+- `pkg/k8s/client.go` exposes `NewClientFromInterface(kubernetes.Interface, serverURL)` so tests can inject `k8s.io/client-go/kubernetes/fake.Clientset`. The production `Client.clientset` field is typed as the interface (not `*kubernetes.Clientset`) to make this work transparently.
+- `pkg/ai/claude.go` exposes `SetAPIURLForTesting(url)` to redirect `claudeAPIURL` at an `httptest.Server` from cross-package tests (notably `pkg/agent`). Suffix `ForTesting` is intentional — it should never appear outside `*_test.go`.
+
+CI runs the suite plus two grep-based invariant guards (see [Telemetry sanitization invariant](#telemetry-sanitization-invariant-do-not-break) below) via `.github/workflows/ci.yml`.
+
+`testdata/` still holds manual smoke targets (`crashloop-pod.yaml`, `stuck-rollout.yaml`) you apply to a real cluster and then drive the agent against; they are not automated tests.
 
 Production build with telemetry baked in:
 ```bash
@@ -96,6 +104,7 @@ Tool inputs are NEVER logged. Only tool *names* go into `rag_events.tool_sequenc
 - `context.Context` in every function that does I/O.
 - No global state — pass dependencies explicitly. (`pkg/k8s/generic.go`'s `sync.Once`-cached dynamic client is the deliberate exception: discovery is expensive and per-process.)
 - Comment the WHY, not the WHAT.
+- Test-only helpers carry a `ForTesting` suffix (e.g. `ai.SetAPIURLForTesting`) so they're greppable and reviewers notice if they appear in non-test code.
 
 ## Do not
 - No web server, database, or persistence layer beyond the JSONL history file.

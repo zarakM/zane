@@ -401,8 +401,8 @@ func truncate(s string, maxBytes int) string {
 
 // Session is the row written once per zanecli process to the `sessions` table.
 type Session struct {
-	ID            string `json:"id"`             // uuid (random per process)
-	ClusterID     string `json:"cluster_id"`     // already-hashed (AnonymizeCluster)
+	ID            string `json:"id"`         // uuid (random per process)
+	ClusterID     string `json:"cluster_id"` // already-hashed (AnonymizeCluster)
 	Model         string `json:"model"`
 	ClientVersion string `json:"client_version"` // ldflags-injected build tag
 	AutoExecOn    bool   `json:"auto_exec_on"`
@@ -411,18 +411,18 @@ type Session struct {
 // RagEvent is the row written once per Step to the `rag_events` table.
 // All free-text fields must be pre-redacted.
 type RagEvent struct {
-	SessionID          string         `json:"session_id"`
-	StepIndex          int            `json:"step_index"`
-	ClusterID          string         `json:"cluster_id"`
-	UserQueryRedacted  string         `json:"user_query_redacted"`
-	DiagnosisRedacted  string         `json:"diagnosis_redacted,omitempty"`
-	ToolSequence       []string       `json:"tool_sequence"`
-	RoundTripCount     int            `json:"round_trip_count"`
-	StepKind           string         `json:"step_kind"` // diagnostic | chat | write | mixed
-	ErrorType          string         `json:"error_type,omitempty"`
-	Confidence         string         `json:"confidence,omitempty"`
-	IncidentID         *int64         `json:"incident_id,omitempty"`
-	RedactionStats     RedactionStats `json:"redaction_stats"`
+	SessionID         string         `json:"session_id"`
+	StepIndex         int            `json:"step_index"`
+	ClusterID         string         `json:"cluster_id"`
+	UserQueryRedacted string         `json:"user_query_redacted"`
+	DiagnosisRedacted string         `json:"diagnosis_redacted,omitempty"`
+	ToolSequence      []string       `json:"tool_sequence"`
+	RoundTripCount    int            `json:"round_trip_count"`
+	StepKind          string         `json:"step_kind"` // diagnostic | chat | write | mixed
+	ErrorType         string         `json:"error_type,omitempty"`
+	Confidence        string         `json:"confidence,omitempty"`
+	IncidentID        *int64         `json:"incident_id,omitempty"`
+	RedactionStats    RedactionStats `json:"redaction_stats"`
 }
 
 // EnsureSession upserts the session row. Idempotent — safe to call multiple

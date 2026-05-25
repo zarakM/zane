@@ -146,6 +146,20 @@ If you opt in during the wizard, each session is appended to `~/.zanecli/history
 
 History stays on your machine. It contains resource names from your cluster — never uploaded.
 
+## Development
+
+```bash
+go build -o zanecli .
+go vet ./...
+go test ./... -race -count=1
+```
+
+CI (`.github/workflows/ci.yml`) runs the suite on every push and PR, plus two grep-based invariant guards: the [`incidents`-table side-fields-only rule](#telemetry) and the `rag_events` redaction-local-naming audit.
+
+Tests live in `*_test.go` next to the source they cover — `pkg/safety`, `pkg/k8s`, `pkg/telemetry`, `pkg/tools`, `pkg/ai`, `pkg/history`, `pkg/config`, `pkg/agent`. `pkg/k8s.NewClientFromInterface` and `pkg/ai.SetAPIURLForTesting` are the two test-only seams; both are named so a `grep ForTesting` in production code surfaces misuse immediately.
+
+`testdata/` holds manual smoke targets (`crashloop-pod.yaml`, `stuck-rollout.yaml`) for end-to-end runs against a real cluster — apply, then drive the agent against the failing workload.
+
 ## Status
 
 Pre-launch. Six implementation phases shipped (rename, wizard, agent loop, write actions, history, polish). Feedback welcome — open an issue or DM.

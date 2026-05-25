@@ -26,9 +26,20 @@ import (
 // The struct holds state (the clientset) and methods act on it.
 // In Go, this is how you do "classes" — a struct + methods with a receiver.
 type Client struct {
-	clientset *kubernetes.Clientset
-	serverURL string          // API server URL, used to generate an anonymous cluster fingerprint
-	restConfig *rest.Config   // kept so the generic get_resource tool can build a dynamic client + RESTMapper
+	// Typed as the interface (not *kubernetes.Clientset) so tests can inject
+	// k8s.io/client-go/kubernetes/fake.Clientset. Every call site uses methods
+	// that exist on kubernetes.Interface, so this widening is transparent.
+	clientset  kubernetes.Interface
+	serverURL  string       // API server URL, used to generate an anonymous cluster fingerprint
+	restConfig *rest.Config // kept so the generic get_resource tool can build a dynamic client + RESTMapper
+}
+
+// NewClientFromInterface builds a Client around a pre-constructed clientset.
+// Intended for tests (e.g. fake.NewSimpleClientset). The serverURL only
+// affects the anonymous cluster fingerprint; restConfig stays nil because
+// generic.go's dynamic-client path is not exercised by interface tests.
+func NewClientFromInterface(cs kubernetes.Interface, serverURL string) *Client {
+	return &Client{clientset: cs, serverURL: serverURL}
 }
 
 // ServerURL returns the cluster API server URL for anonymization purposes.
@@ -39,7 +50,7 @@ func (c *Client) ServerURL() string {
 // Clientset returns the underlying client-go clientset. Exposed so tool
 // implementations in pkg/tools can issue arbitrary API calls without
 // requiring a wrapper method per tool.
-func (c *Client) Clientset() *kubernetes.Clientset {
+func (c *Client) Clientset() kubernetes.Interface {
 	return c.clientset
 }
 
