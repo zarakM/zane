@@ -9,6 +9,9 @@ kubectl-ai-linux
 kubectl-ai-darwin
 kubectl-ai-windows
 kubectl-ai.exe
+supabase/*
+supabase/migrations/*
+supabase/**
 aik8scopilot
 zanecli
 zanecli-linux
