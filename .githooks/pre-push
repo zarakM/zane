@@ -52,6 +52,17 @@ is_secret_file() {
   return 1
 }
 
+# Image/demo assets a README legitimately needs. These are binary, so without
+# this allowlist the is_binary check below would block them. They are still
+# subject to the 1 MiB size cap (checked before the binary check), so this
+# cannot be used to sneak a large blob past the guard.
+is_allowed_asset() {
+  case "$1" in
+    *.gif|*.png|*.jpg|*.jpeg|*.svg|*.webp|*.ico) return 0 ;;
+  esac
+  return 1
+}
+
 is_zane_artifact() {
   # NOTE: zane.yaml is the Krew plugin manifest (a release artifact that IS
   # meant to be tracked), so it is deliberately NOT matched here. The runtime
@@ -107,7 +118,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       report "$f" "large file: ${sz} bytes (> ${MAX_BYTES})"
       continue
     fi
-    if is_binary "$f"; then
+    if is_binary "$f" && ! is_allowed_asset "$f"; then
       report "$f" "binary content detected"
       continue
     fi
